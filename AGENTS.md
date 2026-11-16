@@ -3,14 +3,16 @@
 This repository is a minimal deployable teaching example for school students.
 All comments, documentation and user-facing text must be in simple English.
 
-- UI: `frontend/app.py`; HTTP API: `backend/main.py`; all SQL: `backend/db.py`.
-- Keep the path from button to HTTP request to SQL explicit and small.
+- One process: `main.py` is the page, `server.py` adds HTTP routes with `st.App`,
+  and all SQL is in `db.py`.
+- Use Streamlit the standard way: the script calls Python code directly when a
+  button is clicked. Extra HTTP routes go in `server.py`, never in a second server.
 - The counter is shared by all visitors, and stored in SQLite, never session state.
+  A `st.fragment` with `run_every` shows other visitors' clicks without reloads.
 - Keep runtime data out of Git. Preserve existing database values on startup.
 - Add dependencies with `uv add` or `uv add --dev`, and commit `uv.lock`.
 - Before pushing, run `make test` and check the real UI, console and network in a browser.
-- Tests include API persistence, concurrent increments and a real browser flow.
-- tlfpaas routes `/api*` to the backend and everything else here to the frontend.
+- Tests include SQLite persistence, concurrent increments and a real browser flow.
 - Keep Compose platform-safe: `expose`, no `ports`, no Compose `user`, no external volumes.
 - Runtime images must use a non-root Dockerfile `USER` and listen on `0.0.0.0`.
 - Keep non-secret deployment defaults in `.docker.env`; secrets belong in the platform UI.

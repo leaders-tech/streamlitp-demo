@@ -1,4 +1,4 @@
-"""Check real UI clicks and API failures. Edit for UI changes; copy for another page."""
+"""Check real UI clicks, live updates and the API. Edit for UI changes; copy for another page."""
 
 import os
 import socket
@@ -34,12 +34,15 @@ def wait_until_ready(url, process):
 
 
 @contextmanager
-def server(command, env, ready_url, log_path):
-    # Files preserve useful server output if a browser test fails.
+def server(env, url, log_path):
+    # A file keeps the server output if a browser test fails.
     with log_path.open("a") as log:
+        command = [sys.executable, "-m", "streamlit", "run", "server.py",
+                   "--server.address=127.0.0.1", f"--server.port={url.rsplit(':', 1)[1]}",
+                   "--server.headless=true", "--browser.gatherUsageStats=false"]
         process = subprocess.Popen(command, cwd=ROOT, env=env, stdout=log, stderr=log)
         try:
-            wait_until_ready(ready_url, process)
+            wait_until_ready(f"{url}/api/health", process)
             yield process
         finally:
             process.terminate()
@@ -50,51 +53,54 @@ def server(command, env, ready_url, log_path):
                 process.wait()
 
 
-def test_click_reload_restart_and_api_error(tmp_path):
-    api_port, ui_port = unused_port(), unused_port()
-    api_url = f"http://127.0.0.1:{api_port}"
-    ui_url = f"http://127.0.0.1:{ui_port}"
-    env = dict(os.environ, DB_PATH=str(tmp_path / "counter.sqlite3"),
-               API_URL=api_url, PORT=str(ui_port))
-    # Child servers are normal applications, not NiceGUI pytest screen fixtures.
-    env.pop("PYTEST_CURRENT_TEST", None)
-    api_command = [sys.executable, "-m", "uvicorn", "backend.main:app",
-                   "--host", "127.0.0.1", "--port", str(api_port)]
-    ui_command = [sys.executable, "-m", "streamlit", "run", "frontend/app.py", "--server.address=127.0.0.1", f"--server.port={ui_port}", "--server.headless=true", "--browser.gatherUsageStats=false"]
-    with server(api_command, env, f"{api_url}/api/health", tmp_path / "api.log") as api:
-        with server(ui_command, env, f"{ui_url}/_stcore/health", tmp_path / "ui.log"):
-            with sync_playwright() as playwright:
-                browser = playwright.chromium.launch()
-                page = browser.new_page()
-                errors, failed_requests = [], []
-                page.on("pageerror", lambda error: errors.append(str(error)))
-                page.on("console", lambda message: errors.append(message.text)
-                        if message.type == "error" else None)
-                page.on("requestfailed", lambda request: failed_requests.append(request.url))
-                page.goto(ui_url)
-                expect(page.get_by_text("Count: 0", exact=True)).to_be_visible()
-                page.get_by_role("button", name="Add 1", exact=True).click()
-                expect(page.get_by_text("Count: 1", exact=True)).to_be_visible()
-                assert httpx.get(f"{api_url}/api/counter").json() == {"value": 1}
-                page.reload()
-                expect(page.get_by_text("Count: 1", exact=True)).to_be_visible()
-                # A new browser session must read the same shared database.
-                other = browser.new_page()
-                other.goto(ui_url)
-                expect(other.get_by_text("Count: 1", exact=True)).to_be_visible()
-                other.get_by_role("button", name="Add 1", exact=True).click()
-                expect(other.get_by_text("Count: 2", exact=True)).to_be_visible()
-                other.close()
-                # Stop the API while leaving the UI up: show a friendly error.
-                api.terminate()
-                api.wait(timeout=10)
-                page.get_by_role("button", name="Add 1", exact=True).click()
-                expect(page.get_by_text("Cannot reach the API. Please try again.", exact=True)).to_be_visible()
-                with server(api_command, env, f"{api_url}/api/health", tmp_path / "api.log"):
-                    page.reload()
-                    expect(page.get_by_text("Count: 2", exact=True)).to_be_visible()
-                    page.get_by_role("button", name="Add 1", exact=True).click()
-                    expect(page.get_by_text("Count: 3", exact=True)).to_be_visible()
-                assert errors == []
-                assert failed_requests == []
-                browser.close()
+def test_click_live_update_api_and_restart(tmp_path):
+    port = unused_port()
+    url = f"http://127.0.0.1:{port}"
+    env = dict(os.environ, DB_PATH=str(tmp_path / "counter.sqlite3"))
+    log = tmp_path / "server.log"
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch()
+        errors, failed_requests = [], []
+
+        def open_page():
+            page = browser.new_page()
+            page.on("pageerror", lambda error: errors.append(str(error)))
+            page.on("console", lambda message: errors.append(message.text)
+                    if message.type == "error" else None)
+            page.on("requestfailed", lambda request: failed_requests.append(request.url))
+            page.goto(url)
+            return page
+
+        with server(env, url, log):
+            page = open_page()
+            expect(page.get_by_text("Count: 0", exact=True)).to_be_visible()
+            page.get_by_role("button", name="Add 1", exact=True).click()
+            expect(page.get_by_text("Count: 1", exact=True)).to_be_visible()
+            assert httpx.get(f"{url}/api/counter").json() == {"value": 1}
+
+            # A click in another tab shows up here within two seconds, without a reload.
+            other = open_page()
+            expect(other.get_by_text("Count: 1", exact=True)).to_be_visible()
+            other.get_by_role("button", name="Add 1", exact=True).click()
+            expect(page.get_by_text("Count: 2", exact=True)).to_be_visible()
+
+            # So does an increment through the HTTP API.
+            assert httpx.post(f"{url}/api/counter/increment").json() == {"value": 3}
+            expect(page.get_by_text("Count: 3", exact=True)).to_be_visible()
+            # A GET must never change state, even if someone opens the increment URL.
+            httpx.get(f"{url}/api/counter/increment")
+            assert httpx.get(f"{url}/api/counter").json() == {"value": 3}
+            other.close()
+            page.close()
+
+        # A fresh server reads the same SQLite file.
+        with server(env, url, log):
+            page = open_page()
+            expect(page.get_by_text("Count: 3", exact=True)).to_be_visible()
+            page.get_by_role("button", name="Add 1", exact=True).click()
+            expect(page.get_by_text("Count: 4", exact=True)).to_be_visible()
+            page.close()
+
+        browser.close()
+    assert errors == []
+    assert failed_requests == []

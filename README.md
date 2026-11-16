@@ -1,20 +1,22 @@
-# Streamlit + API + SQLite
+# Streamlit + SQLite
 
 A minimal deployable teaching example for IB DP Computer Science students.
-Click **Add 1** to increase a shared counter. Reload the page or restart the API:
-the value stays in SQLite. All visitors use the same counter. An open page shows
-the last value it loaded; reload to see another visitor's changes.
+Click **Add 1** to increase a shared counter. Reload the page or restart the app:
+the value stays in SQLite. All visitors use the same counter, and every open page
+shows a new value within two seconds, without a reload.
 
 ## How a click works
 
-1. The browser sends the button event to the Streamlit Python server.
-2. The Python UI sends `POST /api/counter/increment` to the FastAPI server.
-3. The API runs an atomic SQL update and returns `{"value": 1}`.
-4. The UI displays the returned value.
+1. The browser sends the button event to the Streamlit Python server over its WebSocket.
+2. Streamlit reruns `main.py`. This time `st.button("Add 1")` returns `True`,
+   so the script calls `db.increment()`.
+3. `db.increment()` runs one atomic SQL update.
+4. The rest of the script runs and shows the new count.
 
-The UI never opens the database. These Python UI frameworks use a WebSocket
-between browser and UI server, so the API call appears in the Python server,
-not as a browser fetch request. Ordinary page loads use `GET /api/counter`.
+Other open pages run the small `show_count` fragment every two seconds. It reads
+the count again, so they see your click without a reload. There is no HTTP request
+between the page and the database: the script is ordinary Python on the server,
+so it calls your code directly.
 
 ## Run locally
 
@@ -23,46 +25,42 @@ From the repository root:
 
 ```sh
 make install
+make run
 ```
 
-Open two terminals in this folder:
-
-```sh
-# Terminal 1: API on port 8081
-make backend
-```
-
-```sh
-# Terminal 2: UI on port 8080
-make frontend
-```
-
-Open http://localhost:8080. Local SQLite data lives in `data/counter.sqlite3`
-(ignored by Git). Stop each server with Ctrl+C.
+Open http://localhost:8080. Open it in a second tab too and click there.
+Local SQLite data lives in `data/counter.sqlite3` (ignored by Git).
+Stop the server with Ctrl+C.
 
 ## Files to read and change
 
 | File | Purpose |
 | --- | --- |
-| `frontend/app.py` | Page, button and HTTP requests |
-| `backend/main.py` | API routes and startup |
-| `backend/db.py` | SQLite table and SQL queries |
-| `tests/test_api.py` | Persistence and concurrent request tests |
-| `tests/test_browser.py` | Real browser clicks, reloads and API error handling |
-| `docker-compose.yml` | UI, API and persistent database volume |
+| `main.py` | The page: button and count |
+| `server.py` | Starts the page and the HTTP routes in one process |
+| `db.py` | SQLite table and SQL queries |
+| `tests/test_db.py` | Persistence and concurrent click tests |
+| `tests/test_browser.py` | Real browser clicks, live updates, API and restart |
+| `docker-compose.yml` | One service and the persistent database volume |
 | `.docker.env` | Non-secret deployment defaults |
 | `Dockerfile` | Non-root runtime with locked dependencies |
 
 ## Try the API
 
+`server.py` wraps the page in `st.App` (Streamlit 1.67 and later) and adds three
+HTTP routes next to it, in the same process. `streamlit run server.py` finds the
+`app` and serves both. The page does not need the routes; they are for other
+programs, such as `curl` or a script:
+
 ```sh
-curl http://localhost:8081/api/counter
-curl -X POST http://localhost:8081/api/counter/increment
-curl http://localhost:8081/api/health
+curl http://localhost:8080/api/counter
+curl -X POST http://localhost:8080/api/counter/increment
+curl http://localhost:8080/api/health
 ```
 
-Interactive API documentation: http://localhost:8081/api/docs.
-GET only reads. POST increments. No request body is needed.
+GET only reads. POST increments, and open pages show it within two seconds.
+If you don't need an API, delete `server.py` and run `streamlit run main.py`,
+after moving its `db.initialize()` call to the top of `main.py`.
 
 ## Test before pushing
 
@@ -70,26 +68,24 @@ GET only reads. POST increments. No request body is needed.
 make test
 ```
 
-The suite starts temporary servers on unused ports, uses a temporary database,
+The suite starts a temporary server on an unused port, uses a temporary database,
 and opens headless Chromium. It does not change your local counter. Run
 `uv run playwright install --with-deps chromium` on Linux if browser libraries
-are missing. For a manual check, open the app, click, reload, and check the browser
-console and network for errors.
+are missing. For a manual check, open the app in two tabs, click, reload, and check
+the browser console and network for errors.
 
 ## Deploy on tlfpaas
 
 1. Push this repository to GitHub and connect it to your tlfpaas project.
-2. The platform reads `docker-compose.yml`, builds both services and publishes
+2. The platform reads `docker-compose.yml`, builds the `web` service and publishes
    the project URL. See the latest deploy log on the project dashboard.
 3. Open the public URL and click **Add 1**. No secrets are needed for this example.
 
-The frontend listens on `0.0.0.0:8080`; the API listens on `0.0.0.0:8081`.
-The platform sends `/api*` to the API and the UI's pages and WebSocket traffic
-to the frontend. `API_URL=http://backend:8081` uses Docker's private service name.
-Both services use the same Dockerfile; the backend overrides the start command.
-Compose deliberately uses `expose`, without publishing host ports.
+The app listens on `0.0.0.0:8080`, and the `tlfpaas.route: "web"` label sends all
+traffic there: pages, the WebSocket and `/api`. Compose deliberately uses `expose`,
+without publishing host ports.
 
-The `counter_data` named volume is mounted at `/data` in the API service.
+The `counter_data` named volume is mounted at `/data`.
 `DB_PATH=/data/counter.sqlite3` keeps the database across restarts and redeploys.
 Keep that path inside `/data`. Deleting the volume deletes the counter.
 
