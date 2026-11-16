@@ -1,0 +1,9 @@
+# Ignore local state and generated files. Edit for new tools; copy for Python projects.
+.venv/
+__pycache__/
+.pytest_cache/
+*.pyc
+data/
+*.sqlite3*
+.env
+.DS_Store

@@ -1,0 +1,45 @@
+# Deploy the UI and API on tlfpaas. Edit for new services; copy for similar apps.
+services:
+  frontend:
+    build:
+      context: .
+    env_file: .docker.env
+    expose:
+      - "8080"
+    labels:
+      tlfpaas.route: "frontend"
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+
+  backend:
+    build:
+      context: .
+    command: [".venv/bin/uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8081"]
+    env_file: .docker.env
+    expose:
+      - "8081"
+    labels:
+      tlfpaas.route: "backend"
+    volumes:
+      - counter_data:/data
+    healthcheck:
+      test: ["CMD", ".venv/bin/python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8081/api/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
+volumes:
+  counter_data:
+
+x-tlfpaas:
+  settings:
+    DB_PATH:
+      default: "/data/counter.sqlite3"
+      description: "SQLite file inside the persistent data volume."
+    API_URL:
+      default: "http://backend:8081"
+      description: "Internal API address used by the Python UI server."
